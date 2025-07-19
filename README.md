@@ -16,7 +16,7 @@ removing metadata from converted files to minimize audio glitches inside the gam
 With that said, this software is offered AS-IS. The code works but I am not a python programmer
 (anymore) so I can offer some limited assistance with bugs, but that's about it.
 
-This application includes FFmpeg, licensed under the LGPL v2.1.
+This application includes FFmpeg, licensed under the LGPL v2.1 (or newer).
 FFmpeg is copyright (c) the FFmpeg developers.
 See https://ffmpeg.org/ for more information.
 
