@@ -1,4 +1,5 @@
-# TF2-wav-converter
+# **TF2-wav-converter**
+
 A simple exe file to mass-convert mp3 files to 48000 hz wav files and delete all metadata from converted files for Titanfall 2 Mods.
 
 -------------------------------------------------------------------------------------------------------------------------------------
@@ -30,7 +31,8 @@ and replace PATH with the full path your FFmpeg version.
 A copy of the FFmpeg license is included in this package.
 
 
-- INSTALLATION & USAGE -
+
+***INSTALLATION & USAGE***
 
 - To use, download the .zip file and extract it somewhere on your computer.
 - Then run "TF2-Wav-Converter.exe"
