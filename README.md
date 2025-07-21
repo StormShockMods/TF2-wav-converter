@@ -1,3 +1,6 @@
+
+<img width="128" height="128" alt="icon-test" src="https://github.com/user-attachments/assets/e0ac018a-c7f1-436f-857f-b9b6786d262c" />
+
 # **TF2-wav-converter**
 
 A simple exe file to mass-convert mp3 files to 48000 hz wav files and delete all metadata from converted files for Titanfall 2 Mods.
