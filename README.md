@@ -1,7 +1,7 @@
 
 <img width="128" height="128" alt="icon-test" src="https://github.com/user-attachments/assets/e0ac018a-c7f1-436f-857f-b9b6786d262c" />
 
-# **TF2-wav-converter**
+# **TF2 Wav Converter**
 
 A simple program that mass-converts mp3 files to wav files, adjusts sample rates, and deletes all metadata from converted files for Titanfall 2 Mods.
 
