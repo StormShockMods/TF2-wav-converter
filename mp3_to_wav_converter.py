@@ -1,334 +1,276 @@
 import os
 import sys
-import traceback
+import wave
+import shutil
 from tkinter import (
     filedialog, Tk, Toplevel, Listbox, END, Scrollbar, RIGHT, Y,
-    Button, BOTTOM, BooleanVar, Checkbutton, Label, messagebox, Frame
+    Button, BOTTOM, BooleanVar, Checkbutton, Label, Frame, PhotoImage
 )
+from tkinter import font
 from pydub import AudioSegment
-from mutagen.wave import WAVE
+from PIL import Image, ImageTk
 
 # ----------------------------
-# FFmpeg Configuration
+# Audio Processing Functions
 # ----------------------------
-def get_ffmpeg_path():
-    default_path = os.path.join(
-        os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else __file__),
-        "ffmpeg.exe"
-    )
-    for arg in sys.argv:
-        if arg.startswith("--ffmpeg-path="):
-            custom_path = arg.split("=", 1)[1].strip('"')
-            if os.path.isfile(custom_path):
-                print(f"Using ffmpeg override at: {custom_path}", flush=True)
-                return custom_path
-            else:
-                print(f"Warning: ffmpeg path override specified but file not found: {custom_path}", flush=True)
-    print(f"Using bundled ffmpeg at: {default_path}", flush=True)
-    return default_path
-
-
-AudioSegment.converter = get_ffmpeg_path()
-
-# ----------------------------
-# Conversion Functions
-# ----------------------------
-def convert_mp3_to_wav_16bit(input_path, output_path, sample_rate, dry_run=False):
-    print(f"Converting MP3: {input_path} -> {output_path}", flush=True)
-    if dry_run:
-        print("Dry-run: Skipping actual conversion.")
-        return False  # indicates file not actually converted
-    audio = AudioSegment.from_mp3(input_path)
-    audio = audio.set_sample_width(2).set_frame_rate(sample_rate)
+def convert_to_stereo(audio):
     if audio.channels == 1:
-        audio = AudioSegment.from_mono_audiosegments(audio, audio)
+        return AudioSegment.from_mono_audiosegments(audio, audio)
+    return audio
+
+def convert_audio(file_path, output_path, sample_rate):
+    audio = AudioSegment.from_file(file_path)
+    audio = convert_to_stereo(audio)
+    audio = audio.set_sample_width(2).set_frame_rate(sample_rate)
     audio.export(output_path, format="wav")
-    print(f"Conversion complete: {output_path}", flush=True)
-    return True  # indicates file converted
 
-def convert_wav_to_stereo_16bit(input_path, output_path, sample_rate, dry_run=False):
-    print(f"* Checking WAV: {input_path}", flush=True)
-    audio = AudioSegment.from_wav(input_path)
-    orig_channels = audio.channels
-    orig_rate = audio.frame_rate
-    orig_width = audio.sample_width
-
-    # Already correct, skip conversion
-    if orig_channels == 2 and orig_rate == sample_rate and orig_width == 2:
-        print(f"* WAV already correct, skipping conversion: {input_path}", flush=True)
-        return False, False, orig_rate  # no change, no mono source, original rate
-
-    if dry_run:
-        print(f"Dry-run: Would convert WAV: {input_path}")
-        return True, (orig_channels == 1), orig_rate
-
-    new_audio = audio.set_sample_width(2).set_frame_rate(sample_rate)
-    if new_audio.channels == 1:
-        new_audio = AudioSegment.from_mono_audiosegments(new_audio, new_audio)
-
-    print(f"* Converting WAV: {input_path} -> {output_path}", flush=True)
-    new_audio.export(output_path, format="wav")
-    print(f"* Updated WAV saved: {output_path}", flush=True)
-    return True, (orig_channels == 1), orig_rate
+def get_wav_properties(file_path):
+    with wave.open(file_path, 'rb') as wav_file:
+        channels = wav_file.getnchannels()
+        framerate = wav_file.getframerate()
+    return channels, framerate
 
 # ----------------------------
-# Metadata Removal
-# ----------------------------
-def remove_metadata_from_wav(file_path, dry_run=False):
-    if dry_run:
-        print(f"Dry-run: Would clear metadata for: {file_path}")
-        return
-    try:
-        audio = WAVE(file_path)
-        audio.delete()
-        audio.save()
-        print(f"Metadata cleared for: {file_path}", flush=True)
-    except Exception as e:
-        print(f"Error clearing metadata from {file_path}: {e}", flush=True)
-
-# ----------------------------
-# Folder Processing
-# ----------------------------
-def process_folder(folder_selected, include_subfolders, sample_rate, dry_run=False):
-    if include_subfolders:
-        gathered = []
-        for root_dir, _, files in os.walk(folder_selected):
-            for f in files:
-                gathered.append(os.path.join(root_dir, f))
-    else:
-        gathered = [
-            os.path.join(folder_selected, f)
-            for f in os.listdir(folder_selected)
-            if os.path.isfile(os.path.join(folder_selected, f))
-        ]
-
-    # Track original WAVs for diagnostics
-    preexisting_wavs = {os.path.abspath(p) for p in gathered if p.lower().endswith(".wav")}
-    # To track mono->stereo converted wavs
-    preexisting_wavs_mono_converted = set()
-    # Track files converted this run (mp3 or wav)
-    converted_files = set()
-
-    # Dictionary file_path => dict of info for diagnostics
-    file_diagnostics = {}
-
-    print(f"Starting processing folder: {folder_selected}, include_subfolders={include_subfolders}, dry_run={dry_run}", flush=True)
-
-    for full_path in gathered:
-        lower = full_path.lower()
-        root_dir = os.path.dirname(full_path)
-        name, ext = os.path.splitext(os.path.basename(lower))
-        try:
-            if ext == ".mp3":
-                wav_path = os.path.splitext(full_path)[0] + ".wav"
-                converted = convert_mp3_to_wav_16bit(full_path, wav_path, sample_rate, dry_run=dry_run)
-                if converted:
-                    converted_files.add(os.path.abspath(wav_path))
-                if not dry_run and converted:
-                    os.remove(full_path)
-                # Record diagnostics for the new wav file created from mp3
-                file_diagnostics[os.path.abspath(wav_path)] = {
-                    "converted_mp3": True,
-                    "was_wav": False,
-                    "sample_rate_modified": True,
-                    "sample_rate_original": sample_rate,
-                    "converted_to_stereo": True  # mp3 conversion always forces stereo here
-                }
-
-            elif ext == ".wav":
-                converted_path = os.path.join(root_dir, f"{name}_converted.wav")
-                did_convert, was_mono_source, orig_rate = convert_wav_to_stereo_16bit(full_path, converted_path, sample_rate, dry_run=dry_run)
-
-                abs_path = os.path.abspath(full_path)
-
-                if did_convert and not dry_run:
-                    os.remove(full_path)
-                    os.rename(converted_path, full_path)
-                    converted_files.add(abs_path)
-                    if was_mono_source:
-                        preexisting_wavs_mono_converted.add(abs_path)
-
-                else:
-                    # Remove leftover temp if exists
-                    if os.path.exists(converted_path):
-                        os.remove(converted_path)
-
-                # Fill diagnostic info
-                file_diagnostics[abs_path] = {
-                    "converted_mp3": False,
-                    "was_wav": True,
-                    "converted_to_stereo": was_mono_source,
-                    "sample_rate_original": orig_rate,
-                    "sample_rate_modified": did_convert,
-                }
-        except Exception as e:
-            print(f"Error processing {full_path}: {e}", flush=True)
-            traceback.print_exc()
-            messagebox.showerror("Processing Error", f"Error processing file:\n{full_path}\n\n{e}")
-
-    if include_subfolders:
-        final_wavs = []
-        for root_dir, _, files in os.walk(folder_selected):
-            for f in files:
-                if f.lower().endswith(".wav"):
-                    final_wavs.append(os.path.abspath(os.path.join(root_dir, f)))
-    else:
-        final_wavs = [
-            os.path.abspath(os.path.join(folder_selected, f))
-            for f in os.listdir(folder_selected)
-            if f.lower().endswith(".wav") and os.path.isfile(os.path.join(folder_selected, f))
-        ]
-
-    all_files_to_show = []
-
-    for wav_path in final_wavs:
-        remove_metadata_from_wav(wav_path, dry_run=dry_run)
-
-        diag = file_diagnostics.get(wav_path, None)
-
-        # Compose diagnostic line
-        diag_line_parts = []
-        if diag is None:
-            # File that was already there but no conversion happened
-            # Assume a preexisting wav that was never processed here
-            diag_line_parts.append("Wave file already present")
-            # Check if we can detect sample rate and channels info for extra accuracy
-            try:
-                audio = AudioSegment.from_wav(wav_path)
-                is_correct = (audio.channels == 2 and audio.frame_rate == sample_rate and audio.sample_width == 2)
-                if is_correct:
-                    diag_line_parts.append("and correct")
-                else:
-                    diag_line_parts.append(f", sample rate {audio.frame_rate}")
-                    if audio.channels == 1:
-                        diag_line_parts.append(", mono")
-            except Exception:
-                pass
-        else:
-            if diag["was_wav"]:
-                diag_line_parts.append("Wave file already present")
-                if not diag["sample_rate_modified"]:
-                    # Unmodified wav - report original sample rate
-                    diag_line_parts.append(f", sample rate {diag['sample_rate_original']}")
-                    if diag["converted_to_stereo"]:
-                        if dry_run:
-                            diag_line_parts.append(", file not stereo, conversion required")
-                        else:
-                            diag_line_parts.append(", converted to stereo")
-                    else:
-                        # check if correct or not
-                        if diag['sample_rate_original'] == sample_rate:
-                            diag_line_parts.append(" and correct")
-                else:
-                    # Was modified
-                    if dry_run:
-                        diag_line_parts.append(f", sample rate modification to {sample_rate} required")
-                        if diag["converted_to_stereo"]:
-                            diag_line_parts.append(", file not stereo, conversion required")
-                    else:
-                        diag_line_parts.append(f", sample rate modified to {sample_rate}")
-                        if diag["converted_to_stereo"]:
-                            diag_line_parts.append(", converted to stereo")
-
-            if diag["converted_mp3"]:
-                diag_line_parts.append("Converted mp3")
-                # mp3 conversions always go stereo and sample rate set, so no need extra here
-
-        all_files_to_show.append(wav_path)
-        all_files_to_show.append("".join(diag_line_parts))
-
-    print(f"Processing complete. Total files processed: {len(all_files_to_show)//2}", flush=True)
-    show_converted_list(all_files_to_show)
-
-# ----------------------------
-# Result Display UI
-# ----------------------------
-def show_converted_list(files):
-    result_window = Toplevel()
-    result_window.title("Conversion Complete - Files Processed")
-    result_window.geometry("800x600")
-    result_window.resizable(True, True)
-
-    scrollbar = Scrollbar(result_window)
-    scrollbar.pack(side=RIGHT, fill=Y)
-
-    listbox = Listbox(result_window, width=120, yscrollcommand=scrollbar.set)
-    for file in files:
-        listbox.insert(END, file)
-    listbox.pack(fill="both", expand=True)
-
-    scrollbar.config(command=listbox.yview)
-
-    exit_button = Button(result_window, text="Exit", command=lambda: (result_window.destroy(), sys.exit()))
-    exit_button.pack(side=BOTTOM, pady=10)
-
-    result_window.protocol("WM_DELETE_WINDOW", lambda: (result_window.destroy(), sys.exit()))
-    result_window.mainloop()
-
-# ----------------------------
-# Entry UI
+# UI Functions
 # ----------------------------
 def open_folder_selector_ui():
+    bg_color = "#2e2e2e"  # dark grey background
+    fg_color = "white"    # white text for contrast
+    accent_green = "#4caf50"
+
     root = Tk()
-    root.title("MP3/WAV Stereo Converter")
+    
+    icon_path = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(__file__)), "icon.ico")
+    if os.path.exists(icon_path):
+        root.iconbitmap(icon_path)
+    
+    root.title("TF2-Wave-Converter")
+    root.geometry("500x500")
+    root.resizable(False, False)
+    root.configure(bg=bg_color)
 
-    check_subfolders = BooleanVar(value=True)
-    sample_rate_var = BooleanVar(value=True)  # True = 48000, False = 44100
-    dry_run_var = BooleanVar(value=False)    # False by default
+    # Load and place image if it exists
+    image_path = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(__file__)), "icon-test.png")
+    if os.path.exists(image_path):
+        try:
+            img = Image.open(image_path)
+            img = img.resize((96, 96), Image.Resampling.LANCZOS)
+            img_tk = ImageTk.PhotoImage(img)
+            img_label = Label(root, image=img_tk, bg=bg_color)
+            img_label.image = img_tk  # keep reference
+            img_label.pack(pady=(45, 15))
+        except Exception as e:
+            print(f"Could not load image: {e}")
 
-    label = Label(root, text="Click to select folder and start conversion:")
-    label.pack(pady=10)
+    # Bold title label
+    bold_font = font.Font(weight="bold", size=12)
+    label = Label(root, text="- TF2 Wave Conversion Tool -", font=bold_font, bg=bg_color, fg=fg_color)
+    label.pack(pady=0)
+    
+    # Bold title label
+    bold_font = font.Font(weight="bold", size=10)
+    label = Label(root, text="- Created by StormShockMods -", font=bold_font, bg=bg_color, fg=fg_color)
+    label.pack(pady=(0, 5))
+    
+    # Bold title label
+    bold_font = font.Font(weight="bold", size=10)
+    label = Label(root, text="Options:", font=bold_font, bg=bg_color, fg=fg_color)
+    label.pack(pady=(15, 0))
 
-    check1 = Checkbutton(root, text="Check subfolders", variable=check_subfolders)
-    check1.pack(pady=5)
+    # Checkboxes setup
+    check_subfolders = BooleanVar()
+    sample_rate_var = BooleanVar()
+    dry_run_var = BooleanVar()
 
-    # Sample rate section
-    rate_frame = Frame(root)
-    rate_frame.pack(pady=5)
+    options_frame = Frame(root, bg=bg_color)
+    options_frame.pack(pady=10)
 
-    Label(rate_frame, text="Sample Rate").pack(side="left", padx=5)
-    rate_label = Label(rate_frame, text="", font=("TkDefaultFont", 10, "bold"))
-    rate_label.pack(side="right", padx=5)
+    check1 = Checkbutton(
+        options_frame, text="Check subfolders", variable=check_subfolders,
+        bg=bg_color, fg=fg_color, selectcolor=bg_color, activebackground=bg_color,
+        activeforeground=fg_color
+    )
+    check1.grid(row=0, column=0, sticky="w", padx=5, pady=3)
+
+    rate_check = Checkbutton(
+        options_frame, text="Sample Rate: ", variable=sample_rate_var,
+        command=lambda: update_sample_rate_label(),
+        bg=bg_color, fg=fg_color, selectcolor=bg_color, activebackground=bg_color,
+        activeforeground=fg_color
+    )
+    rate_check.grid(row=1, column=0, sticky="w", padx=5, pady=3)
+
+    rate_label = Label(options_frame, text="", font=("TkDefaultFont", 10, "bold"),
+                       bg=bg_color, fg=fg_color)
+    rate_label.grid(row=1, column=1, sticky="w", padx=5)
 
     def update_sample_rate_label():
         if sample_rate_var.get():
-            rate_label.config(text="48000 Hz", fg="green")
+            rate_label.config(text="48000 Hz", fg=accent_green)
         else:
             rate_label.config(text="44100 Hz", fg="red")
 
-    Checkbutton(rate_frame, variable=sample_rate_var, command=update_sample_rate_label).pack(side="left", padx=5)
     update_sample_rate_label()
 
-    # Check-only mode section
-    checkonly_frame = Frame(root)
-    checkonly_frame.pack(pady=5)
+    checkonly_check = Checkbutton(
+        options_frame, text="Check-only mode", variable=dry_run_var,
+        command=lambda: update_checkonly_label(),
+        bg=bg_color, fg=fg_color, selectcolor=bg_color, activebackground=bg_color,
+        activeforeground=fg_color
+    )
+    checkonly_check.grid(row=2, column=0, sticky="w", padx=5, pady=3)
 
-    checkonly_label = Label(checkonly_frame, text="Check-only mode", font=("TkDefaultFont", 10, "bold"), fg="grey")
-    checkonly_label.pack(side="left", padx=5)
+    checkonly_label = Label(options_frame, text="", font=("TkDefaultFont", 10, "bold"),
+                            bg=bg_color, fg=fg_color)
+    checkonly_label.grid(row=2, column=1, sticky="w", padx=5)
 
     def update_checkonly_label():
         if dry_run_var.get():
-            checkonly_label.config(fg="green")
+            checkonly_label.config(text="Enabled", fg=accent_green)
         else:
-            checkonly_label.config(fg="grey")
+            checkonly_label.config(text="Disabled", fg="grey")
 
-    Checkbutton(checkonly_frame, variable=dry_run_var, command=update_checkonly_label).pack(side="left", padx=5)
     update_checkonly_label()
 
+    # Define this function before the button that uses it
     def on_select_folder():
-        folder = filedialog.askdirectory(title="Select Folder to Convert Files")
-        if folder:
-            root.withdraw()
-            selected_rate = 48000 if sample_rate_var.get() else 44100
-            process_folder(folder, check_subfolders.get(), selected_rate, dry_run=dry_run_var.get())
+        selected_folder = filedialog.askdirectory()
+        if selected_folder:
+            convert_files_in_folder(selected_folder, check_subfolders.get(), sample_rate_var.get(), dry_run_var.get())
 
-    Button(root, text="Select Folder", command=on_select_folder).pack(pady=20)
-    Button(root, text="Exit", command=lambda: (root.destroy(), sys.exit())).pack(pady=5)
+    select_button = Button(
+        root, text="Click to select folder and start conversion",
+        command=on_select_folder, bg="#444444", fg=fg_color,
+        activebackground="#555555", activeforeground=fg_color
+    )
+    select_button.pack(pady=20)
+
+    exit_button = Button(
+        root, text="Exit", command=root.destroy,
+        bg="#444444", fg=fg_color,
+        activebackground="#555555", activeforeground=fg_color
+    )
+    exit_button.pack(pady=5)
 
     root.mainloop()
 
+
 # ----------------------------
-# Main Entry Point
+# Conversion Function
+# ----------------------------
+def convert_files_in_folder(folder, check_subfolders, use_48000, dry_run):
+    sample_rate = 48000 if use_48000 else 44100
+    converted_files = []
+
+    file_list = []
+    for dirpath, dirnames, filenames in os.walk(folder):
+        for file in filenames:
+            if file.lower().endswith((".mp3", ".wav")):
+                file_list.append(os.path.join(dirpath, file))
+        if not check_subfolders:
+            break
+
+    for file_path in file_list:
+        ext = os.path.splitext(file_path)[1].lower()
+        base_name = os.path.splitext(file_path)[0]
+
+        if ext == ".mp3":
+            wav_path = base_name + ".wav"
+            if dry_run:
+                converted_files.append((file_path, f"Converted mp3, sample rate modification to {sample_rate} required, file not stereo, conversion required"))
+                continue
+            convert_audio(file_path, wav_path, sample_rate)
+            os.remove(file_path)
+            converted_files.append((file_path, f"Converted mp3, sample rate modified to {sample_rate}, converted to stereo"))
+
+        elif ext == ".wav":
+            try:
+                channels, framerate = get_wav_properties(file_path)
+                needs_update = (framerate != sample_rate or channels != 2)
+                if not needs_update:
+                    converted_files.append((file_path, f"Wave file already present and correct, sample rate {framerate}"))
+                    continue
+
+                if dry_run:
+                    msg = "Wave file already present"
+                    if framerate != sample_rate:
+                        msg += f", sample rate modification to {sample_rate} required"
+                    else:
+                        msg += f", sample rate {framerate}"
+                    if channels != 2:
+                        msg += ", file not stereo, conversion required"
+                    converted_files.append((file_path, msg))
+                    continue
+
+                temp_path = base_name + "_temp.wav"
+                convert_audio(file_path, temp_path, sample_rate)
+                os.remove(file_path)
+                os.rename(temp_path, file_path)
+                msg = "Wave file already present"
+                if framerate != sample_rate:
+                    msg += f", sample rate modified to {sample_rate}"
+                else:
+                    msg += f", sample rate {framerate}"
+                if channels != 2:
+                    msg += ", converted to stereo"
+                converted_files.append((file_path, msg))
+
+            except Exception as e:
+                converted_files.append((file_path, f"Error reading wav file: {str(e)}"))
+
+    show_result_window(converted_files)
+
+# ----------------------------
+# Result Display
+# ----------------------------
+def show_result_window(file_messages):
+    bg_color = "#2e2e2e"
+    fg_color = "white"
+    accent_green = "#4caf50"
+
+    result_win = Toplevel()
+    result_win.title("Conversion Results")
+
+    icon_path = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(__file__)), "icon.ico")
+    if os.path.exists(icon_path):
+        result_win.iconbitmap(icon_path)
+
+    result_win.geometry("600x400")
+    result_win.configure(bg=bg_color)
+
+    # Frame for listbox + scrollbar
+    list_frame = Frame(result_win, bg=bg_color)
+    list_frame.pack(fill="both", expand=True, padx=10, pady=(10, 0))
+
+    listbox = Listbox(
+        list_frame, width=100, bg=bg_color, fg=fg_color,
+        selectbackground=accent_green, selectforeground="black"
+    )
+    scrollbar = Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+    listbox.config(yscrollcommand=scrollbar.set)
+
+    listbox.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side=RIGHT, fill=Y)
+
+    for path, msg in file_messages:
+        listbox.insert(END, path)
+        listbox.insert(END, msg)
+        listbox.insert(END, "")
+
+    # Frame for the close button at bottom
+    button_frame = Frame(result_win, bg=bg_color)
+    button_frame.pack(fill="x", pady=10)
+
+    close_btn = Button(
+        button_frame, text="Close", command=result_win.destroy,
+        bg="#444444", fg=fg_color,
+        activebackground="#555555", activeforeground=fg_color,
+        width=12
+    )
+    close_btn.pack(pady=0)
+
+# ----------------------------
+# Entry
 # ----------------------------
 if __name__ == "__main__":
     open_folder_selector_ui()
