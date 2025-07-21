@@ -3,14 +3,13 @@ import sys
 import traceback
 from tkinter import (
     filedialog, Tk, Toplevel, Listbox, END, Scrollbar, RIGHT, Y,
-    Button, BOTTOM, BooleanVar, Checkbutton, Label, messagebox
+    Button, BOTTOM, BooleanVar, Checkbutton, Label, messagebox, Frame
 )
 from pydub import AudioSegment
 from mutagen.wave import WAVE
 
-
 # ----------------------------
-# FFmpeg resolution
+# FFmpeg Configuration
 # ----------------------------
 def get_ffmpeg_path():
     default_path = os.path.join(
@@ -31,58 +30,54 @@ def get_ffmpeg_path():
 
 AudioSegment.converter = get_ffmpeg_path()
 
-
 # ----------------------------
-# Conversion helpers
+# Conversion Functions
 # ----------------------------
-def convert_mp3_to_wav_16bit_48k(input_path, output_path):
+def convert_mp3_to_wav_16bit(input_path, output_path, sample_rate, dry_run=False):
     print(f"Converting MP3: {input_path} -> {output_path}", flush=True)
+    if dry_run:
+        print("Dry-run: Skipping actual conversion.")
+        return False  # indicates file not actually converted
     audio = AudioSegment.from_mp3(input_path)
-    audio = audio.set_sample_width(2).set_frame_rate(48000)
+    audio = audio.set_sample_width(2).set_frame_rate(sample_rate)
     if audio.channels == 1:
         audio = AudioSegment.from_mono_audiosegments(audio, audio)
     audio.export(output_path, format="wav")
     print(f"Conversion complete: {output_path}", flush=True)
+    return True  # indicates file converted
 
-
-def convert_wav_to_stereo_16bit_48k(input_path, output_path):
-    """
-    Returns (did_convert, was_mono_source).
-
-    did_convert -> True if we wrote a new file (format or channels changed).
-    was_mono_source -> True if original WAV was mono (channels==1).
-    """
+def convert_wav_to_stereo_16bit(input_path, output_path, sample_rate, dry_run=False):
     print(f"* Checking WAV: {input_path}", flush=True)
     audio = AudioSegment.from_wav(input_path)
     orig_channels = audio.channels
     orig_rate = audio.frame_rate
     orig_width = audio.sample_width
 
-    # Normalize
-    new_audio = audio.set_sample_width(2).set_frame_rate(48000)
+    # Already correct, skip conversion
+    if orig_channels == 2 and orig_rate == sample_rate and orig_width == 2:
+        print(f"* WAV already correct, skipping conversion: {input_path}", flush=True)
+        return False, False, orig_rate  # no change, no mono source, original rate
+
+    if dry_run:
+        print(f"Dry-run: Would convert WAV: {input_path}")
+        return True, (orig_channels == 1), orig_rate
+
+    new_audio = audio.set_sample_width(2).set_frame_rate(sample_rate)
     if new_audio.channels == 1:
         new_audio = AudioSegment.from_mono_audiosegments(new_audio, new_audio)
 
-    changed = (
-        new_audio.channels != orig_channels or
-        new_audio.frame_rate != orig_rate or
-        new_audio.sample_width != orig_width
-    )
-
-    if changed:
-        print(f"* Converting WAV: {input_path} -> {output_path}", flush=True)
-        new_audio.export(output_path, format="wav")
-        print(f"* Updated WAV saved: {output_path}", flush=True)
-        return True, (orig_channels == 1)
-    else:
-        print(f"* WAV already correct, no conversion needed: {input_path}", flush=True)
-        return False, (orig_channels == 1)
-
+    print(f"* Converting WAV: {input_path} -> {output_path}", flush=True)
+    new_audio.export(output_path, format="wav")
+    print(f"* Updated WAV saved: {output_path}", flush=True)
+    return True, (orig_channels == 1), orig_rate
 
 # ----------------------------
-# Metadata stripper
+# Metadata Removal
 # ----------------------------
-def remove_metadata_from_wav(file_path):
+def remove_metadata_from_wav(file_path, dry_run=False):
+    if dry_run:
+        print(f"Dry-run: Would clear metadata for: {file_path}")
+        return
     try:
         audio = WAVE(file_path)
         audio.delete()
@@ -91,12 +86,10 @@ def remove_metadata_from_wav(file_path):
     except Exception as e:
         print(f"Error clearing metadata from {file_path}: {e}", flush=True)
 
-
 # ----------------------------
-# Main processing
+# Folder Processing
 # ----------------------------
-def process_folder(folder_selected, include_subfolders):
-    # Collect all file paths up front (so we don't consume os.walk twice)
+def process_folder(folder_selected, include_subfolders, sample_rate, dry_run=False):
     if include_subfolders:
         gathered = []
         for root_dir, _, files in os.walk(folder_selected):
@@ -109,16 +102,18 @@ def process_folder(folder_selected, include_subfolders):
             if os.path.isfile(os.path.join(folder_selected, f))
         ]
 
-    # Track what existed before we touched anything (so we can mark *)
+    # Track original WAVs for diagnostics
     preexisting_wavs = {os.path.abspath(p) for p in gathered if p.lower().endswith(".wav")}
-    preexisting_wavs_mono_converted = set()  # subset for ** marking
+    # To track mono->stereo converted wavs
+    preexisting_wavs_mono_converted = set()
+    # Track files converted this run (mp3 or wav)
+    converted_files = set()
 
-    converted_files = set()  # all files we actually converted (mp3->wav or wav->updated)
-    all_files_to_show = []
+    # Dictionary file_path => dict of info for diagnostics
+    file_diagnostics = {}
 
-    print(f"Starting processing folder: {folder_selected}, include_subfolders={include_subfolders}", flush=True)
+    print(f"Starting processing folder: {folder_selected}, include_subfolders={include_subfolders}, dry_run={dry_run}", flush=True)
 
-    # First pass: convert MP3s and normalize/convert WAVs
     for full_path in gathered:
         lower = full_path.lower()
         root_dir = os.path.dirname(full_path)
@@ -126,38 +121,51 @@ def process_folder(folder_selected, include_subfolders):
         try:
             if ext == ".mp3":
                 wav_path = os.path.splitext(full_path)[0] + ".wav"
-                convert_mp3_to_wav_16bit_48k(full_path, wav_path)
-                os.remove(full_path)
-                converted_files.add(os.path.abspath(wav_path))
+                converted = convert_mp3_to_wav_16bit(full_path, wav_path, sample_rate, dry_run=dry_run)
+                if converted:
+                    converted_files.add(os.path.abspath(wav_path))
+                if not dry_run and converted:
+                    os.remove(full_path)
+                # Record diagnostics for the new wav file created from mp3
+                file_diagnostics[os.path.abspath(wav_path)] = {
+                    "converted_mp3": True,
+                    "was_wav": False,
+                    "sample_rate_modified": True,
+                    "sample_rate_original": sample_rate,
+                    "converted_to_stereo": True  # mp3 conversion always forces stereo here
+                }
 
             elif ext == ".wav":
-                # We'll create a temp converted file in same folder
                 converted_path = os.path.join(root_dir, f"{name}_converted.wav")
-                did_convert, was_mono_source = convert_wav_to_stereo_16bit_48k(full_path, converted_path)
-                if did_convert:
+                did_convert, was_mono_source, orig_rate = convert_wav_to_stereo_16bit(full_path, converted_path, sample_rate, dry_run=dry_run)
+
+                abs_path = os.path.abspath(full_path)
+
+                if did_convert and not dry_run:
                     os.remove(full_path)
                     os.rename(converted_path, full_path)
-                    converted_files.add(os.path.abspath(full_path))
+                    converted_files.add(abs_path)
                     if was_mono_source:
-                        preexisting_wavs_mono_converted.add(os.path.abspath(full_path))
+                        preexisting_wavs_mono_converted.add(abs_path)
+
                 else:
-                    # cleanup temp if created
+                    # Remove leftover temp if exists
                     if os.path.exists(converted_path):
                         os.remove(converted_path)
-                    # even if no conversion, we still want to know if it was mono source
-                    if was_mono_source:
-                        # Means original file *was* mono but "no conversion" is contradictory;
-                        # this can happen if upstream libs reported 2 channels after load.
-                        # We'll be conservative and not mark ** in this branch.
-                        pass
 
+                # Fill diagnostic info
+                file_diagnostics[abs_path] = {
+                    "converted_mp3": False,
+                    "was_wav": True,
+                    "converted_to_stereo": was_mono_source,
+                    "sample_rate_original": orig_rate,
+                    "sample_rate_modified": did_convert,
+                }
         except Exception as e:
             print(f"Error processing {full_path}: {e}", flush=True)
             traceback.print_exc()
             messagebox.showerror("Processing Error", f"Error processing file:\n{full_path}\n\n{e}")
 
-    # Second pass: strip metadata & build display list
-    # Re-list WAVs after conversions (state may have changed)
     if include_subfolders:
         final_wavs = []
         for root_dir, _, files in os.walk(folder_selected):
@@ -171,34 +179,69 @@ def process_folder(folder_selected, include_subfolders):
             if f.lower().endswith(".wav") and os.path.isfile(os.path.join(folder_selected, f))
         ]
 
+    all_files_to_show = []
+
     for wav_path in final_wavs:
-        remove_metadata_from_wav(wav_path)
+        remove_metadata_from_wav(wav_path, dry_run=dry_run)
 
-        if wav_path in converted_files:
-            # Newly created (from MP3) OR updated preexisting WAV
-            if wav_path in preexisting_wavs:
-                # It existed before; decide between * and **.
-                if wav_path in preexisting_wavs_mono_converted:
-                    all_files_to_show.append(f"** {wav_path}")
+        diag = file_diagnostics.get(wav_path, None)
+
+        # Compose diagnostic line
+        diag_line_parts = []
+        if diag is None:
+            # File that was already there but no conversion happened
+            # Assume a preexisting wav that was never processed here
+            diag_line_parts.append("Wave file already present")
+            # Check if we can detect sample rate and channels info for extra accuracy
+            try:
+                audio = AudioSegment.from_wav(wav_path)
+                is_correct = (audio.channels == 2 and audio.frame_rate == sample_rate and audio.sample_width == 2)
+                if is_correct:
+                    diag_line_parts.append("and correct")
                 else:
-                    all_files_to_show.append(f"* {wav_path}")
-            else:
-                # This is a brand-new WAV from MP3 conversion -> no prefix
-                all_files_to_show.append(wav_path)
+                    diag_line_parts.append(f", sample rate {audio.frame_rate}")
+                    if audio.channels == 1:
+                        diag_line_parts.append(", mono")
+            except Exception:
+                pass
         else:
-            # Not converted this run (just metadata cleared)
-            # If it was preexisting, mark *; never ** because no conversion occurred.
-            if wav_path in preexisting_wavs:
-                all_files_to_show.append(f"* {wav_path}")
-            else:
-                all_files_to_show.append(wav_path)
+            if diag["was_wav"]:
+                diag_line_parts.append("Wave file already present")
+                if not diag["sample_rate_modified"]:
+                    # Unmodified wav - report original sample rate
+                    diag_line_parts.append(f", sample rate {diag['sample_rate_original']}")
+                    if diag["converted_to_stereo"]:
+                        if dry_run:
+                            diag_line_parts.append(", file not stereo, conversion required")
+                        else:
+                            diag_line_parts.append(", converted to stereo")
+                    else:
+                        # check if correct or not
+                        if diag['sample_rate_original'] == sample_rate:
+                            diag_line_parts.append(" and correct")
+                else:
+                    # Was modified
+                    if dry_run:
+                        diag_line_parts.append(f", sample rate modification to {sample_rate} required")
+                        if diag["converted_to_stereo"]:
+                            diag_line_parts.append(", file not stereo, conversion required")
+                    else:
+                        diag_line_parts.append(f", sample rate modified to {sample_rate}")
+                        if diag["converted_to_stereo"]:
+                            diag_line_parts.append(", converted to stereo")
 
-    print(f"Processing complete. Total files processed: {len(all_files_to_show)}", flush=True)
+            if diag["converted_mp3"]:
+                diag_line_parts.append("Converted mp3")
+                # mp3 conversions always go stereo and sample rate set, so no need extra here
+
+        all_files_to_show.append(wav_path)
+        all_files_to_show.append("".join(diag_line_parts))
+
+    print(f"Processing complete. Total files processed: {len(all_files_to_show)//2}", flush=True)
     show_converted_list(all_files_to_show)
 
-
 # ----------------------------
-# UI
+# Result Display UI
 # ----------------------------
 def show_converted_list(files):
     result_window = Toplevel()
@@ -222,37 +265,70 @@ def show_converted_list(files):
     result_window.protocol("WM_DELETE_WINDOW", lambda: (result_window.destroy(), sys.exit()))
     result_window.mainloop()
 
-
+# ----------------------------
+# Entry UI
+# ----------------------------
 def open_folder_selector_ui():
     root = Tk()
     root.title("MP3/WAV Stereo Converter")
 
-    check_var = BooleanVar()
-    check_var.set(True)
+    check_subfolders = BooleanVar(value=True)
+    sample_rate_var = BooleanVar(value=True)  # True = 48000, False = 44100
+    dry_run_var = BooleanVar(value=False)    # False by default
 
     label = Label(root, text="Click to select folder and start conversion:")
     label.pack(pady=10)
 
-    check = Checkbutton(root, text="Check subfolders", variable=check_var)
-    check.pack(pady=5)
+    check1 = Checkbutton(root, text="Check subfolders", variable=check_subfolders)
+    check1.pack(pady=5)
+
+    # Sample rate section
+    rate_frame = Frame(root)
+    rate_frame.pack(pady=5)
+
+    Label(rate_frame, text="Sample Rate").pack(side="left", padx=5)
+    rate_label = Label(rate_frame, text="", font=("TkDefaultFont", 10, "bold"))
+    rate_label.pack(side="right", padx=5)
+
+    def update_sample_rate_label():
+        if sample_rate_var.get():
+            rate_label.config(text="48000 Hz", fg="green")
+        else:
+            rate_label.config(text="44100 Hz", fg="red")
+
+    Checkbutton(rate_frame, variable=sample_rate_var, command=update_sample_rate_label).pack(side="left", padx=5)
+    update_sample_rate_label()
+
+    # Check-only mode section
+    checkonly_frame = Frame(root)
+    checkonly_frame.pack(pady=5)
+
+    checkonly_label = Label(checkonly_frame, text="Check-only mode", font=("TkDefaultFont", 10, "bold"), fg="grey")
+    checkonly_label.pack(side="left", padx=5)
+
+    def update_checkonly_label():
+        if dry_run_var.get():
+            checkonly_label.config(fg="green")
+        else:
+            checkonly_label.config(fg="grey")
+
+    Checkbutton(checkonly_frame, variable=dry_run_var, command=update_checkonly_label).pack(side="left", padx=5)
+    update_checkonly_label()
 
     def on_select_folder():
         folder = filedialog.askdirectory(title="Select Folder to Convert Files")
         if folder:
             root.withdraw()
-            process_folder(folder, check_var.get())
+            selected_rate = 48000 if sample_rate_var.get() else 44100
+            process_folder(folder, check_subfolders.get(), selected_rate, dry_run=dry_run_var.get())
 
-    btn = Button(root, text="Select Folder", command=on_select_folder)
-    btn.pack(pady=20)
-
-    exit_button = Button(root, text="Exit", command=lambda: (root.destroy(), sys.exit()))
-    exit_button.pack(pady=5)
+    Button(root, text="Select Folder", command=on_select_folder).pack(pady=20)
+    Button(root, text="Exit", command=lambda: (root.destroy(), sys.exit())).pack(pady=5)
 
     root.mainloop()
 
-
 # ----------------------------
-# Entry
+# Main Entry Point
 # ----------------------------
 if __name__ == "__main__":
     open_folder_selector_ui()
