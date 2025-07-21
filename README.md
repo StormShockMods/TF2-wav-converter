@@ -51,4 +51,6 @@ A copy of the FFmpeg license is included in this package.
 - Once the metadata removal is completed for all files, a new window will pop up with a results list, showing the path of every file converted in that run (files present in a folder but not converted during that run will have a * before their path).
 - From there, you can then exit the program and it will close.
 
+-------------------------------------------------------------------------------------------------------------------------------------
+
   Vinson Dynamics thanks you for your service.
