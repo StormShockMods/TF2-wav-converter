@@ -44,7 +44,7 @@ A copy of the FFmpeg license is included in this package.
 - To use, download the .zip file and extract it somewhere on your computer.
 - Then run "TF2-Wav-Converter.exe"
 - It will take a moment (it's extracting everything including FFmpeg to a temporary directory on your computer)
-- Then you will see a UI including an exit button, checkbox to convert files in subfolders or not, and a "Select Folder" button
+- Then you will see a UI including an exit button, checkbox to convert files in subfolders or not, a checkbox to adjust sample rate, a checkbox to run in Check-only mode, and a "Select Folder" button
 - When you click the "Select Folder" button a windows dialog will open and you can select which folder you would like to comb for mp3 files.
 - Once you find the correct folder, hit "Select Folder" at the bottom right of the dialog window and it will begin converting any mp3 files it finds inside that folder (and optionally subfolders) into .wav files.
 - Once conversion is complete, it will then do a second comb through every file and delete any metadata attached to the wav files (this can cause loud static noises at the end of a sound effect in Titanfall 2).
