@@ -22,7 +22,7 @@ def convert_audio(file_path, output_path, sample_rate):
     audio = AudioSegment.from_file(file_path)
     audio = convert_to_stereo(audio)
     audio = audio.set_sample_width(2).set_frame_rate(sample_rate)
-    audio.export(output_path, format="wav")
+    audio.export(output_path, format="wav", parameters=["-acodec", "pcm_s16le"],  tags=None)
 
 def get_wav_properties(file_path):
     with wave.open(file_path, 'rb') as wav_file:
